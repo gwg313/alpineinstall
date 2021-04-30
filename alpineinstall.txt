@@ -1,0 +1,82 @@
+apk add openssh
+rc-update add sshd
+rc-status
+/etc/init.d/sshd start
+
+#add to /etc/network/interfaces
+auto eth0  
+iface eth0 inet dhcp
+/etc/init.d/networking restart
+
+passwd
+adduser deploy
+
+ssh deploy@
+su root
+
+setup-apkrepos
+apk update
+apk add cryptsetup lvm2 e2fsprogs util-linux dosfstools
+
+use cfdisk make 50mb efi
+rest linux filesystem
+
+cryptsetup luksFormat --type luks1 -c aes-xts-plain64 -s 512 --iter-time 5000 --hash sha512 /dev/sda2
+cryptsetup luksOpen /dev/sda2 enc_root
+
+mkfs.fat -F32 /dev/sda1
+pvcreate /dev/mapper/enc_root
+vgcreate lvm /dev/mapper/enc_root
+
+lvcreate -L 16G lvm -n swap
+lvcreate -l 100%FREE lvm -n root
+
+mkswap /dev/lvm/swap
+mkfs.ext4 /dev/lvm/root
+
+mount /dev/lvm/root /mnt -t ext4
+mkdir /mnt/boot/efi -p
+mount /dev/sda1 /mnt/boot/efi/
+
+blkid -s UUID -o value /dev/sda2
+
+setup-disk -m sys /mnt
+
+mount -t proc /proc /mnt/proc
+mount --rbind /dev /mnt/dev
+mount --make-rslave /mnt/dev
+mount --rbind /sys /mnt/sys
+
+chroot /mnt
+source /etc/profile
+export PS1="(chroot) $PS1"
+
+apk add grub-efi efibootmgr
+apk del syslinux
+
+vi /etc/default/grub
+
+# /etc/default/grub
+GRUB_DISTRIBUTOR="Alpine"
+GRUB_TIMEOUT=2
+GRUB_DISABLE_SUBMENU=y
+GRUB_DISABLE_RECOVERY=true
+GRUB_ENABLE_CRYPTODISK=y
+GRUB_CMDLINE_LINUX_DEFAULT="cryptroot=UUID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxx cryptdm=lvmcrypt cryptkey"
+GRUB_PRELOAD_MODULES="luks cryptodisk part_gpt lvm"
+
+dd bs=512 count=4 if=/dev/urandom of=/crypto_keyfile.bin
+chmod 000 /crypto_keyfile.bin
+cryptsetup luksAddKey /dev/sda2 /crypto_keyfile.bin
+vi /etc/mkinitfs/mkinitfs.conf
+add cryptsetup and cryptkey
+
+mkinitfs -c /etc/mkinitfs/mkinitfs.conf $(ls /lib/modules/)
+grub-install --target=x86_64-efi --efi-directory=/boot/efi
+grub-mkconfig -o /boot/grub/grub.cfg
+passwd
+exit
+cd /
+umount -R /mnt/proc /mnt/dev /mnt/sys /mnt/boot/efi
+umount /mnt
+reboot
